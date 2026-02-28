@@ -81,35 +81,62 @@ type: 0x00 = Data, 0x01 = Padding (discarded)
 
 ## Quick Start
 
-### Docker (recommended)
+### Reality Mode (recommended — zero config TLS)
 
-Generate a UUID first:
-
-```bash
-UUID=$(uuidgen)
-echo "Your UUID: $UUID"
-```
+No domain, no certificates, no Let's Encrypt. Server auto-generates a self-signed cert and prints a fingerprint. Client verifies by fingerprint.
 
 **Server** (on your VPS):
 
 ```bash
+UUID=$(uuidgen)
+
 docker run -d --name viavless-server \
   -p 443:443 \
   -e VIAVLESS_UUID=$UUID \
-  -e VIAVLESS_LISTEN=0.0.0.0:443 \
-  -e VIAVLESS_TLS_CERT=/certs/cert.pem \
-  -e VIAVLESS_TLS_KEY=/certs/key.pem \
-  -v /path/to/certs:/certs:ro \
   ghcr.io/rezraf/viavless-server:latest
 ```
 
-Or with auto HTTPS (Caddy + Let's Encrypt):
+Check the fingerprint:
 
 ```bash
+docker logs viavless-server
+```
+
+Output:
+
+```
+========================================
+  VIAVLESS SERVER - REALITY MODE
+========================================
+  Fingerprint: a1b2c3d4e5f6...
+  UUID:        your-uuid-here
+========================================
+```
+
+**Client** (on your machine):
+
+```bash
+docker run -d --name viavless-client \
+  -p 1080:1080 \
+  -e VIAVLESS_SERVER_HOST=<YOUR_SERVER_IP> \
+  -e VIAVLESS_UUID=<UUID> \
+  -e VIAVLESS_FINGERPRINT=<FINGERPRINT> \
+  -e VIAVLESS_SOCKS_LISTEN=0.0.0.0:1080 \
+  ghcr.io/rezraf/viavless-client:latest
+```
+
+Set your browser SOCKS5 proxy to `127.0.0.1:1080`. Done.
+
+### With domain + Let's Encrypt
+
+If you have a domain, use Caddy for automatic HTTPS:
+
+```bash
+UUID=$(uuidgen)
+
 curl -sL https://raw.githubusercontent.com/rezraf/viavless/main/docker-compose.yml -o docker-compose.yml
 curl -sL https://raw.githubusercontent.com/rezraf/viavless/main/Caddyfile -o Caddyfile
 
-# Set env
 export VIAVLESS_UUID=$UUID
 export DOMAIN=your-domain.com
 sed -i "s/your-domain.com/$DOMAIN/" Caddyfile
@@ -117,7 +144,7 @@ sed -i "s/your-domain.com/$DOMAIN/" Caddyfile
 docker compose up -d
 ```
 
-**Client** (on your machine):
+Client (no fingerprint needed — uses real CA cert):
 
 ```bash
 docker run -d --name viavless-client \
@@ -128,21 +155,19 @@ docker run -d --name viavless-client \
   ghcr.io/rezraf/viavless-client:latest
 ```
 
-Then set your browser SOCKS5 proxy to `127.0.0.1:1080`. Done.
-
 ### From source
 
 ```bash
 git clone https://github.com/rezraf/viavless.git
 cd viavless
-./setup.sh your-domain.com
 
-# Server
-cargo run --release -p viavless-server
+# Server (reality mode — no cert files needed)
+VIAVLESS_UUID=$(uuidgen) cargo run --release -p viavless-server
 
-# Client (on another machine)
-export VIAVLESS_SERVER_HOST=your-domain.com
-export VIAVLESS_UUID=<uuid-from-setup>
+# Client
+export VIAVLESS_SERVER_HOST=your-server-ip
+export VIAVLESS_UUID=<uuid>
+export VIAVLESS_FINGERPRINT=<fingerprint>
 cargo run --release -p viavless-client
 ```
 
@@ -156,20 +181,24 @@ All configuration is done via environment variables:
 |----------|---------|-------------|
 | `VIAVLESS_LISTEN` | `0.0.0.0:443` | Listen address |
 | `VIAVLESS_UUID` | *required* | Client UUID for auth |
-| `VIAVLESS_TLS_CERT` | `cert.pem` | TLS certificate path |
-| `VIAVLESS_TLS_KEY` | `key.pem` | TLS private key path |
+| `VIAVLESS_TLS_CERT` | *none* | TLS certificate path (if set, uses manual cert mode) |
+| `VIAVLESS_TLS_KEY` | *none* | TLS private key path |
+| `VIAVLESS_NO_TLS` | `false` | Disable TLS (for use behind reverse proxy) |
 | `VIAVLESS_WS_PATH` | `/ws` | WebSocket endpoint path |
+
+> If neither `VIAVLESS_TLS_CERT` nor `VIAVLESS_NO_TLS` is set, the server auto-generates a self-signed certificate (**Reality mode**) and prints the fingerprint to stdout.
 
 ### Client
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VIAVLESS_SOCKS_LISTEN` | `127.0.0.1:1080` | Local SOCKS5 listen address |
-| `VIAVLESS_SERVER_HOST` | *required* | Server hostname |
+| `VIAVLESS_SERVER_HOST` | *required* | Server hostname or IP |
 | `VIAVLESS_SERVER_PORT` | `443` | Server port |
-| `VIAVLESS_SERVER_SNI` | same as host | TLS SNI (for CDN setups) |
+| `VIAVLESS_SERVER_SNI` | same as host | TLS SNI (auto `viavless.local` in reality mode) |
 | `VIAVLESS_WS_PATH` | `/ws` | WebSocket path |
 | `VIAVLESS_UUID` | *required* | Auth UUID |
+| `VIAVLESS_FINGERPRINT` | *none* | Server cert SHA-256 fingerprint (**Reality mode**) |
 | `VIAVLESS_FRAGMENT` | `true` | Enable ClientHello fragmentation |
 | `VIAVLESS_FRAGMENT_SIZE` | `40` | Max fragment size in bytes |
 | `VIAVLESS_PADDING` | `true` | Enable traffic padding |

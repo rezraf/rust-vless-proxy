@@ -21,3 +21,6 @@ rustls-pemfile = "2"
 rustls-pki-types = "1"
 anyhow = { workspace = true }
 subtle = { workspace = true }
+rcgen = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

@@ -25,6 +25,75 @@ struct Config {
     tls_connector: TlsConnector,
 }
 
+/// Custom TLS certificate verifier that checks SHA-256 fingerprint
+/// instead of validating against a CA chain (Reality mode).
+#[derive(Debug)]
+struct FingerprintVerifier {
+    expected_fingerprint: Vec<u8>,
+}
+
+impl FingerprintVerifier {
+    fn new(hex_fingerprint: &str) -> anyhow::Result<Self> {
+        let expected = hex::decode(hex_fingerprint)
+            .map_err(|_| anyhow::anyhow!("VIAVLESS_FINGERPRINT is not valid hex"))?;
+        if expected.len() != 32 {
+            return Err(anyhow::anyhow!("VIAVLESS_FINGERPRINT must be a SHA-256 hash (64 hex chars)"));
+        }
+        Ok(Self { expected_fingerprint: expected })
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for FingerprintVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        _server_name: &rustls_pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        use sha2::{Sha256, Digest};
+
+        let fingerprint = Sha256::digest(end_entity.as_ref());
+
+        if fingerprint.as_slice() == self.expected_fingerprint.as_slice() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            let got = hex::encode(fingerprint);
+            tracing::error!(
+                expected = hex::encode(&self.expected_fingerprint),
+                got = %got,
+                "server certificate fingerprint mismatch"
+            );
+            Err(rustls::Error::General("certificate fingerprint mismatch".into()))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls_pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls_pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 impl Config {
     fn from_env() -> Self {
         let uuid: Uuid = std::env::var("VIAVLESS_UUID")
@@ -32,13 +101,26 @@ impl Config {
             .parse()
             .expect("VIAVLESS_UUID is not a valid UUID");
 
-        // Build TLS config once and reuse across all connections
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let tls_config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        let tls_connector = TlsConnector::from(Arc::new(tls_config));
+        let fingerprint = std::env::var("VIAVLESS_FINGERPRINT").ok();
+
+        let tls_connector = if let Some(ref fp) = fingerprint {
+            // Reality mode — verify by fingerprint, no CA needed
+            let verifier = FingerprintVerifier::new(fp)
+                .expect("invalid VIAVLESS_FINGERPRINT");
+            let tls_config = rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth();
+            TlsConnector::from(Arc::new(tls_config))
+        } else {
+            // Standard mode — verify against system CA roots
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let tls_config = rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            TlsConnector::from(Arc::new(tls_config))
+        };
 
         Self {
             socks_listen: std::env::var("VIAVLESS_SOCKS_LISTEN")
@@ -50,7 +132,14 @@ impl Config {
                 .parse()
                 .expect("invalid port"),
             server_sni: std::env::var("VIAVLESS_SERVER_SNI")
-                .unwrap_or_else(|_| std::env::var("VIAVLESS_SERVER_HOST").unwrap_or_default()),
+                .unwrap_or_else(|_| {
+                    if fingerprint.is_some() {
+                        // In reality mode, SNI doesn't matter — use a dummy
+                        "viavless.local".into()
+                    } else {
+                        std::env::var("VIAVLESS_SERVER_HOST").unwrap_or_default()
+                    }
+                }),
             ws_path: std::env::var("VIAVLESS_WS_PATH").unwrap_or_else(|_| "/ws".into()),
             uuid,
             fake_sni: std::env::var("VIAVLESS_FAKE_SNI").ok(),
@@ -82,9 +171,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
+
+    let mode = if std::env::var("VIAVLESS_FINGERPRINT").is_ok() { "reality" } else { "standard" };
     tracing::info!(
         listen = %config.socks_listen,
         server = %config.server_host,
+        mode = mode,
         fragment = config.fragment_enabled,
         padding = config.padding_enabled,
         "starting viavless client"

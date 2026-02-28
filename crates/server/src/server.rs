@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use sha2::{Sha256, Digest};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio_rustls::TlsAcceptor;
@@ -326,4 +327,53 @@ fn make_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<TlsAcc
         .with_single_cert(certs, key)?;
 
     Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+/// Generate a self-signed TLS certificate at startup (Reality mode).
+/// Returns the TLS acceptor and the SHA-256 fingerprint of the certificate.
+pub fn generate_self_signed_tls() -> anyhow::Result<(TlsAcceptor, String)> {
+    let key_pair = rcgen::KeyPair::generate()?;
+    let mut params = rcgen::CertificateParams::new(vec!["viavless.local".into()])?;
+    params.distinguished_name.push(rcgen::DnType::CommonName, "viavless");
+
+    let cert = params.self_signed(&key_pair)?;
+
+    let cert_der = rustls_pki_types::CertificateDer::from(cert.der().to_vec());
+    let key_der = rustls_pki_types::PrivateKeyDer::try_from(key_pair.serialize_der())
+        .map_err(|e| anyhow::anyhow!("failed to parse generated key: {}", e))?;
+
+    // Compute SHA-256 fingerprint of the DER-encoded certificate
+    let fingerprint = hex::encode(Sha256::digest(cert_der.as_ref()));
+
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)?;
+
+    Ok((TlsAcceptor::from(Arc::new(config)), fingerprint))
+}
+
+/// Run server with a pre-built TLS acceptor (for Reality mode).
+pub async fn run_tls_with_acceptor(
+    listen: &str,
+    uuid_str: &str,
+    tls_acceptor: TlsAcceptor,
+    ws_path: &str,
+) -> anyhow::Result<()> {
+    let allowed_uuid: Uuid = uuid_str.parse()?;
+    let listener = TcpListener::bind(listen).await?;
+    let ws_path = ws_path.to_string();
+
+    tracing::info!("listening (TLS/reality) on {}", listen);
+
+    loop {
+        let (stream, peer_addr) = listener.accept().await?;
+        let acceptor = tls_acceptor.clone();
+        let ws_path = ws_path.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_tls_connection(stream, acceptor, allowed_uuid, &ws_path).await {
+                tracing::warn!(peer = %peer_addr, error = %e, "connection failed");
+            }
+        });
+    }
 }

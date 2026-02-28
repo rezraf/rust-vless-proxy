@@ -47,11 +47,37 @@ async fn main() -> anyhow::Result<()> {
     );
 
     if config.no_tls {
-        // Plain WebSocket mode — for use behind a TLS-terminating reverse proxy (Caddy, nginx)
         server::run_plain(&config.listen, &config.uuid, &config.ws_path).await
-    } else {
+    } else if config.tls_cert.is_some() || config.tls_key.is_some() {
+        // Manual cert mode — user provided cert/key files
         let cert = config.tls_cert.unwrap_or_else(|| PathBuf::from("cert.pem"));
         let key = config.tls_key.unwrap_or_else(|| PathBuf::from("key.pem"));
         server::run_tls(&config.listen, &config.uuid, &cert, &key, &config.ws_path).await
+    } else {
+        // Reality mode — auto-generate self-signed cert, print fingerprint
+        let (tls_acceptor, fingerprint) = server::generate_self_signed_tls()?;
+
+        println!();
+        println!("========================================");
+        println!("  VIAVLESS SERVER - REALITY MODE");
+        println!("========================================");
+        println!("  Fingerprint: {}", fingerprint);
+        println!("  UUID:        {}", config.uuid);
+        println!("  Listen:      {}", config.listen);
+        println!("  WS Path:     {}", config.ws_path);
+        println!("========================================");
+        println!();
+        println!("  Client command:");
+        println!("  docker run -d --name viavless-client \\");
+        println!("    -p 1080:1080 \\");
+        println!("    -e VIAVLESS_SERVER_HOST=<YOUR_SERVER_IP> \\");
+        println!("    -e VIAVLESS_UUID={} \\", config.uuid);
+        println!("    -e VIAVLESS_FINGERPRINT={} \\", fingerprint);
+        println!("    -e VIAVLESS_SOCKS_LISTEN=0.0.0.0:1080 \\");
+        println!("    ghcr.io/rezraf/viavless-client:latest");
+        println!();
+
+        tracing::info!(fingerprint = %fingerprint, "reality mode: self-signed cert generated");
+        server::run_tls_with_acceptor(&config.listen, &config.uuid, tls_acceptor, &config.ws_path).await
     }
 }
