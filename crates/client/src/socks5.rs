@@ -2,9 +2,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use viavless_protocol::Address;
 
-/// SOCKS5 command types
+/// SOCKS5 command types (internal to handshake logic)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SocksCommand {
+enum SocksCommand {
     Connect,
     UdpAssociate,
 }

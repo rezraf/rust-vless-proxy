@@ -6,7 +6,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::Message;
-use uuid::Uuid;
 use viavless_protocol::{Address, Command, FrameType, RequestHeader, ResponseHeader, UdpPacket};
 
 use crate::dpi;
@@ -89,15 +88,14 @@ async fn connect_ws(
         MaybeFragmented::Plain(tcp_stream)
     };
 
-    let tls_stream = tls_connect(stream, &config.server_sni).await?;
+    let tls_stream = tls_connect(stream, &config.server_sni, &config.tls_connector).await?;
 
     let ws_url = format!("wss://{}{}", config.server_sni, config.ws_path);
     let (mut ws_stream, _) = tokio_tungstenite::client_async(&ws_url, tls_stream).await?;
 
     // Send protocol header
-    let uuid: Uuid = config.uuid.parse()?;
     let header = RequestHeader {
-        uuid,
+        uuid: config.uuid,
         command,
         address: target.clone(),
     };
@@ -174,9 +172,8 @@ pub async fn tcp_relay(
                     }
                     Ok((FrameType::Padding, _)) => continue,
                     Err(_) => {
-                        if socks_write.write_all(&data).await.is_err() {
-                            break;
-                        }
+                        tracing::warn!("received malformed frame, skipping");
+                        continue;
                     }
                 },
                 Ok(Message::Close(_)) | Err(_) => break,
@@ -247,7 +244,6 @@ pub async fn udp_relay(
                         continue;
                     }
 
-                    let _atyp = buf[3];
                     let (address, data_offset) = match parse_socks_udp_addr(&buf[3..n]) {
                         Ok(v) => v,
                         Err(_) => continue,
@@ -408,20 +404,117 @@ fn should_send_padding(msg_count: u32) -> bool {
 async fn tls_connect<S>(
     stream: S,
     sni: &str,
+    connector: &TlsConnector,
 ) -> anyhow::Result<tokio_rustls::client::TlsStream<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let connector = TlsConnector::from(Arc::new(tls_config));
     let server_name = rustls_pki_types::ServerName::try_from(sni.to_string())?;
-
     let tls_stream = connector.connect(server_name, stream).await?;
     Ok(tls_stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_socks_udp_addr_ipv4() {
+        // ATYP=0x01, IP=1.2.3.4, Port=80
+        let buf = [0x01, 1, 2, 3, 4, 0x00, 0x50];
+        let (addr, consumed) = parse_socks_udp_addr(&buf).unwrap();
+        assert_eq!(consumed, 7);
+        match addr {
+            Address::Ipv4(ip, port) => {
+                assert_eq!(ip, [1, 2, 3, 4]);
+                assert_eq!(port, 80);
+            }
+            _ => panic!("expected Ipv4"),
+        }
+    }
+
+    #[test]
+    fn parse_socks_udp_addr_domain() {
+        // ATYP=0x03, len=7, "foo.bar", Port=443
+        let mut buf = vec![0x03, 7];
+        buf.extend_from_slice(b"foo.bar");
+        buf.extend_from_slice(&443u16.to_be_bytes());
+        let (addr, consumed) = parse_socks_udp_addr(&buf).unwrap();
+        assert_eq!(consumed, 2 + 7 + 2);
+        match addr {
+            Address::Domain(domain, port) => {
+                assert_eq!(domain, "foo.bar");
+                assert_eq!(port, 443);
+            }
+            _ => panic!("expected Domain"),
+        }
+    }
+
+    #[test]
+    fn parse_socks_udp_addr_ipv6() {
+        // ATYP=0x04, 16 bytes IP, Port=8080
+        let mut buf = vec![0x04];
+        buf.extend_from_slice(&[0u8; 16]);
+        buf.extend_from_slice(&8080u16.to_be_bytes());
+        let (addr, consumed) = parse_socks_udp_addr(&buf).unwrap();
+        assert_eq!(consumed, 19);
+        match addr {
+            Address::Ipv6(ip, port) => {
+                assert_eq!(ip, [0u8; 16]);
+                assert_eq!(port, 8080);
+            }
+            _ => panic!("expected Ipv6"),
+        }
+    }
+
+    #[test]
+    fn parse_socks_udp_addr_empty() {
+        assert!(parse_socks_udp_addr(&[]).is_err());
+    }
+
+    #[test]
+    fn parse_socks_udp_addr_short_ipv4() {
+        // Too short for IPv4
+        assert!(parse_socks_udp_addr(&[0x01, 1, 2]).is_err());
+    }
+
+    #[test]
+    fn parse_socks_udp_addr_unknown_atyp() {
+        assert!(parse_socks_udp_addr(&[0xFF, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_ipv4() {
+        let addr = Address::Ipv4([10, 0, 0, 1], 3000);
+        let encoded = encode_socks_udp_addr(&addr);
+        let (decoded, consumed) = parse_socks_udp_addr(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded.to_socket_string(), addr.to_socket_string());
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_domain() {
+        let addr = Address::Domain("example.com".into(), 443);
+        let encoded = encode_socks_udp_addr(&addr);
+        let (decoded, consumed) = parse_socks_udp_addr(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded.to_socket_string(), addr.to_socket_string());
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_ipv6() {
+        let addr = Address::Ipv6([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 8443);
+        let encoded = encode_socks_udp_addr(&addr);
+        let (decoded, consumed) = parse_socks_udp_addr(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded.to_socket_string(), addr.to_socket_string());
+    }
+
+    #[test]
+    fn should_send_padding_deterministic_structure() {
+        // Just verify the function doesn't panic for various inputs
+        for i in 0..20 {
+            let _ = should_send_padding(i);
+        }
+    }
 }

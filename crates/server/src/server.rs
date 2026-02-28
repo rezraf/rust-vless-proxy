@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 use viavless_protocol::{Address, Command, FrameType, RequestHeader, ResponseHeader, UdpPacket};
 
@@ -131,8 +132,9 @@ where
 
     let (header, consumed) = RequestHeader::decode(data)?;
 
-    if header.uuid != allowed_uuid {
-        tracing::warn!(uuid = %header.uuid, "unauthorized uuid");
+    // Constant-time UUID comparison to prevent timing side-channel attacks
+    if header.uuid.as_bytes().ct_eq(allowed_uuid.as_bytes()).unwrap_u8() != 1 {
+        tracing::warn!("unauthorized uuid");
         return Err(anyhow::anyhow!("unauthorized"));
     }
 
@@ -180,9 +182,8 @@ async fn handle_tcp(
                     }
                     Ok((FrameType::Padding, _)) => continue,
                     Err(_) => {
-                        if remote_write.write_all(&data).await.is_err() {
-                            break;
-                        }
+                        tracing::warn!("received malformed frame, skipping");
+                        continue;
                     }
                 },
                 Ok(Message::Close(_)) | Err(_) => break,

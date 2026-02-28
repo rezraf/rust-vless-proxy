@@ -3,26 +3,43 @@ mod fragment_stream;
 mod socks5;
 mod tunnel;
 
-use socks5::SocksRequest;
-use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
 
-#[derive(Debug)]
+use socks5::SocksRequest;
+use tokio_rustls::TlsConnector;
+use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
+
 struct Config {
     socks_listen: String,
     server_host: String,
     server_port: u16,
     server_sni: String,
     ws_path: String,
-    uuid: String,
+    uuid: Uuid,
     fake_sni: Option<String>,
     fragment_enabled: bool,
     fragment_size: usize,
     padding_enabled: bool,
     padding_max: usize,
+    tls_connector: TlsConnector,
 }
 
 impl Config {
     fn from_env() -> Self {
+        let uuid: Uuid = std::env::var("VIAVLESS_UUID")
+            .expect("VIAVLESS_UUID must be set")
+            .parse()
+            .expect("VIAVLESS_UUID is not a valid UUID");
+
+        // Build TLS config once and reuse across all connections
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let tls_connector = TlsConnector::from(Arc::new(tls_config));
+
         Self {
             socks_listen: std::env::var("VIAVLESS_SOCKS_LISTEN")
                 .unwrap_or_else(|_| "127.0.0.1:1080".into()),
@@ -35,7 +52,7 @@ impl Config {
             server_sni: std::env::var("VIAVLESS_SERVER_SNI")
                 .unwrap_or_else(|_| std::env::var("VIAVLESS_SERVER_HOST").unwrap_or_default()),
             ws_path: std::env::var("VIAVLESS_WS_PATH").unwrap_or_else(|_| "/ws".into()),
-            uuid: std::env::var("VIAVLESS_UUID").expect("VIAVLESS_UUID must be set"),
+            uuid,
             fake_sni: std::env::var("VIAVLESS_FAKE_SNI").ok(),
             fragment_enabled: std::env::var("VIAVLESS_FRAGMENT")
                 .unwrap_or_else(|_| "true".into())
@@ -53,6 +70,7 @@ impl Config {
                 .unwrap_or_else(|_| "256".into())
                 .parse()
                 .unwrap_or(256),
+            tls_connector,
         }
     }
 }
@@ -73,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let listener = tokio::net::TcpListener::bind(&config.socks_listen).await?;
-    let config = std::sync::Arc::new(config);
+    let config = Arc::new(config);
 
     loop {
         let (stream, peer) = listener.accept().await?;

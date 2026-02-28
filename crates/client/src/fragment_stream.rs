@@ -1,6 +1,5 @@
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 use rand::Rng;
@@ -23,7 +22,7 @@ pub struct FragmentingStream {
     /// Bytes already written from current fragment
     current_offset: usize,
     /// Whether the first write (ClientHello) has been processed
-    first_write_done: AtomicBool,
+    first_write_done: bool,
     /// Fragment size for ClientHello splitting
     fragment_size: usize,
     /// Whether to apply TLS record splitting
@@ -44,7 +43,7 @@ impl FragmentingStream {
             pending_fragments: Vec::new(),
             current_fragment: 0,
             current_offset: 0,
-            first_write_done: AtomicBool::new(false),
+            first_write_done: false,
             fragment_size,
             record_split,
             fake_sni,
@@ -59,6 +58,11 @@ impl FragmentingStream {
         if let Some(ref fake) = self.fake_sni {
             if dpi::replace_sni_in_client_hello(&mut buf, fake) {
                 tracing::debug!(fake_sni = %fake, "replaced SNI in ClientHello");
+            } else {
+                tracing::warn!(
+                    fake_sni = %fake,
+                    "fake SNI replacement failed (length mismatch or not a ClientHello)"
+                );
             }
         }
 
@@ -93,7 +97,7 @@ impl FragmentingStream {
         self.pending_fragments = fragments;
         self.current_fragment = 0;
         self.current_offset = 0;
-        self.first_write_done.store(true, Ordering::SeqCst);
+        self.first_write_done = true;
     }
 }
 
@@ -157,7 +161,7 @@ impl AsyncWrite for FragmentingStream {
         }
 
         // First write? Fragment it for DPI evasion.
-        if !this.first_write_done.load(Ordering::SeqCst) {
+        if !this.first_write_done {
             this.process_first_write(buf);
             // Now recurse to start sending fragments
             return Pin::new(this).poll_write(cx, buf);
