@@ -2,6 +2,7 @@ mod server;
 
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 #[derive(Debug)]
 struct Config {
@@ -20,10 +21,13 @@ impl Config {
             .parse()
             .unwrap_or(false);
 
+        let uuid = std::env::var("VIAVLESS_UUID")
+            .unwrap_or_else(|_| Uuid::new_v4().to_string());
+
         Self {
             listen: std::env::var("VIAVLESS_LISTEN")
                 .unwrap_or_else(|_| if no_tls { "0.0.0.0:8080".into() } else { "0.0.0.0:443".into() }),
-            uuid: std::env::var("VIAVLESS_UUID").expect("VIAVLESS_UUID must be set"),
+            uuid,
             tls_cert: std::env::var("VIAVLESS_TLS_CERT").ok().map(PathBuf::from),
             tls_key: std::env::var("VIAVLESS_TLS_KEY").ok().map(PathBuf::from),
             ws_path: std::env::var("VIAVLESS_WS_PATH").unwrap_or_else(|_| "/ws".into()),
