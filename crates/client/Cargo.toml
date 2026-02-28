@@ -1,0 +1,27 @@
+[package]
+name = "viavless-client"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "viavless-client"
+path = "src/main.rs"
+
+[dependencies]
+viavless-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+futures-util = "0.3"
+rustls-pki-types = "1"
+anyhow = { workspace = true }
+webpki-roots = { workspace = true }
