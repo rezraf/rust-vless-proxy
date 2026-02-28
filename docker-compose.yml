@@ -1,6 +1,6 @@
 services:
   viavless:
-    build: .
+    image: ghcr.io/rezraf/viavless-server:latest
     restart: unless-stopped
     environment:
       - VIAVLESS_UUID=${VIAVLESS_UUID}

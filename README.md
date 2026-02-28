@@ -1,4 +1,4 @@
-# rust-vless-proxy
+# viavless
 
 A high-performance VLESS-like proxy written in Rust with advanced DPI (Deep Packet Inspection) evasion techniques.
 
@@ -81,42 +81,70 @@ type: 0x00 = Data, 0x01 = Padding (discarded)
 
 ## Quick Start
 
-### 1. Setup
+### Docker (recommended)
+
+Generate a UUID first:
 
 ```bash
-git clone https://github.com/rezraf/rust-vless-proxy.git
-cd rust-vless-proxy
-
-# Generate UUID + self-signed TLS certs + .env
-./setup.sh your-domain.com
+UUID=$(uuidgen)
+echo "Your UUID: $UUID"
 ```
 
-### 2. Server (on VPS)
+**Server** (on your VPS):
 
 ```bash
-cargo run --release -p viavless-server
+docker run -d --name viavless-server \
+  -p 443:443 \
+  -e VIAVLESS_UUID=$UUID \
+  -e VIAVLESS_LISTEN=0.0.0.0:443 \
+  -e VIAVLESS_TLS_CERT=/certs/cert.pem \
+  -e VIAVLESS_TLS_KEY=/certs/key.pem \
+  -v /path/to/certs:/certs:ro \
+  ghcr.io/rezraf/viavless-server:latest
 ```
 
-Or with Docker:
+Or with auto HTTPS (Caddy + Let's Encrypt):
 
 ```bash
+curl -sL https://raw.githubusercontent.com/rezraf/viavless/main/docker-compose.yml -o docker-compose.yml
+curl -sL https://raw.githubusercontent.com/rezraf/viavless/main/Caddyfile -o Caddyfile
+
+# Set env
+export VIAVLESS_UUID=$UUID
+export DOMAIN=your-domain.com
+sed -i "s/your-domain.com/$DOMAIN/" Caddyfile
+
 docker compose up -d
 ```
 
-### 3. Client (on local machine)
+**Client** (on your machine):
 
 ```bash
-export VIAVLESS_SERVER_HOST=your-domain.com
-export VIAVLESS_UUID=<uuid-from-setup>
-export VIAVLESS_FRAGMENT=true
-export VIAVLESS_PADDING=true
-
-cargo run --release -p viavless-client
+docker run -d --name viavless-client \
+  -p 1080:1080 \
+  -e VIAVLESS_SERVER_HOST=your-domain.com \
+  -e VIAVLESS_UUID=$UUID \
+  -e VIAVLESS_SOCKS_LISTEN=0.0.0.0:1080 \
+  ghcr.io/rezraf/viavless-client:latest
 ```
 
-### 4. Configure your browser
+Then set your browser SOCKS5 proxy to `127.0.0.1:1080`. Done.
 
-Set SOCKS5 proxy to `127.0.0.1:1080`
+### From source
+
+```bash
+git clone https://github.com/rezraf/viavless.git
+cd viavless
+./setup.sh your-domain.com
+
+# Server
+cargo run --release -p viavless-server
+
+# Client (on another machine)
+export VIAVLESS_SERVER_HOST=your-domain.com
+export VIAVLESS_UUID=<uuid-from-setup>
+cargo run --release -p viavless-client
+```
 
 ## Configuration
 

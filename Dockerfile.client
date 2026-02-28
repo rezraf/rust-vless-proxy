@@ -6,12 +6,12 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-RUN cargo build --release -p viavless-server && strip target/release/viavless-server
+RUN cargo build --release -p viavless-client && strip target/release/viavless-client
 
 FROM gcr.io/distroless/cc-debian12
 
-COPY --from=builder /app/target/release/viavless-server /viavless-server
+COPY --from=builder /app/target/release/viavless-client /viavless-client
 
-EXPOSE 443 8080
+EXPOSE 1080
 
-ENTRYPOINT ["/viavless-server"]
+ENTRYPOINT ["/viavless-client"]
