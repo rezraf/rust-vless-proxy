@@ -81,22 +81,19 @@ type: 0x00 = Data, 0x01 = Padding (discarded)
 
 ## Quick Start
 
-### Reality Mode (recommended — zero config TLS)
+### Reality Mode (recommended — zero config)
 
-No domain, no certificates, no Let's Encrypt. Server auto-generates a self-signed cert and prints a fingerprint. Client verifies by fingerprint.
+No domain, no certificates, no UUID to generate. Just run the server and it prints everything you need.
 
 **Server** (on your VPS):
 
 ```bash
-UUID=$(uuidgen)
-
 docker run -d --name viavless-server \
   -p 443:443 \
-  -e VIAVLESS_UUID=$UUID \
   ghcr.io/rezraf/viavless-server:latest
 ```
 
-Check the fingerprint:
+Check the output:
 
 ```bash
 docker logs viavless-server
@@ -109,23 +106,20 @@ Output:
   VIAVLESS SERVER - REALITY MODE
 ========================================
   Fingerprint: a1b2c3d4e5f6...
-  UUID:        your-uuid-here
+  UUID:        xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ========================================
+
+  Client command:
+  docker run -d --name viavless-client \
+    -p 1080:1080 \
+    -e VIAVLESS_SERVER_HOST=<YOUR_SERVER_IP> \
+    -e VIAVLESS_UUID=xxxxxxxx-... \
+    -e VIAVLESS_FINGERPRINT=a1b2c3d4... \
+    -e VIAVLESS_SOCKS_LISTEN=0.0.0.0:1080 \
+    ghcr.io/rezraf/viavless-client:latest
 ```
 
-**Client** (on your machine):
-
-```bash
-docker run -d --name viavless-client \
-  -p 1080:1080 \
-  -e VIAVLESS_SERVER_HOST=<YOUR_SERVER_IP> \
-  -e VIAVLESS_UUID=<UUID> \
-  -e VIAVLESS_FINGERPRINT=<FINGERPRINT> \
-  -e VIAVLESS_SOCKS_LISTEN=0.0.0.0:1080 \
-  ghcr.io/rezraf/viavless-client:latest
-```
-
-Set your browser SOCKS5 proxy to `127.0.0.1:1080`. Done.
+**Client** — copy the command from server logs, replace `<YOUR_SERVER_IP>` with your VPS IP. Done.
 
 ### With domain + Let's Encrypt
 
@@ -180,7 +174,7 @@ All configuration is done via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VIAVLESS_LISTEN` | `0.0.0.0:443` | Listen address |
-| `VIAVLESS_UUID` | *required* | Client UUID for auth |
+| `VIAVLESS_UUID` | *auto-generated* | Client UUID for auth (random UUIDv4 if not set) |
 | `VIAVLESS_TLS_CERT` | *none* | TLS certificate path (if set, uses manual cert mode) |
 | `VIAVLESS_TLS_KEY` | *none* | TLS private key path |
 | `VIAVLESS_NO_TLS` | `false` | Disable TLS (for use behind reverse proxy) |
