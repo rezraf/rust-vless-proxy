@@ -290,6 +290,41 @@ pub enum ProtocolError {
     InvalidFrameType(u8),
 }
 
+/// UDP datagram frame for relaying individual UDP packets over WebSocket.
+///
+/// ```text
+/// ┌──────┬──────────┬─────────────┐
+/// │ atyp │ address  │   payload   │
+/// │ 1 B  │ variable │    rest     │
+/// └──────┴──────────┴─────────────┘
+/// ```
+///
+/// Each WebSocket message wraps exactly one UDP datagram with its
+/// destination address, so the server knows where to send it.
+#[derive(Debug, Clone)]
+pub struct UdpPacket {
+    pub address: Address,
+    pub payload: Vec<u8>,
+}
+
+impl UdpPacket {
+    pub fn encode(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(64 + self.payload.len());
+        self.address.encode(&mut buf);
+        buf.extend_from_slice(&self.payload);
+        buf
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self, ProtocolError> {
+        let mut buf: &[u8] = data;
+        let start = buf.remaining();
+        let address = Address::decode(&mut buf)?;
+        let consumed = start - buf.remaining();
+        let payload = data[consumed..].to_vec();
+        Ok(UdpPacket { address, payload })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +444,32 @@ mod tests {
     fn frame_type_empty() {
         let err = FrameType::parse(&[]).unwrap_err();
         assert!(matches!(err, ProtocolError::BufferTooShort));
+    }
+
+    #[test]
+    fn udp_packet_roundtrip_ipv4() {
+        let pkt = UdpPacket {
+            address: Address::Ipv4([8, 8, 8, 8], 53),
+            payload: b"\x00\x01\x02\x03".to_vec(),
+        };
+        let encoded = pkt.encode();
+        let decoded = UdpPacket::decode(&encoded).unwrap();
+        assert_eq!(decoded.address, Address::Ipv4([8, 8, 8, 8], 53));
+        assert_eq!(decoded.payload, b"\x00\x01\x02\x03");
+    }
+
+    #[test]
+    fn udp_packet_roundtrip_domain() {
+        let pkt = UdpPacket {
+            address: Address::Domain("dns.google".to_string(), 53),
+            payload: vec![0xAA; 512],
+        };
+        let encoded = pkt.encode();
+        let decoded = UdpPacket::decode(&encoded).unwrap();
+        assert_eq!(
+            decoded.address,
+            Address::Domain("dns.google".to_string(), 53)
+        );
+        assert_eq!(decoded.payload.len(), 512);
     }
 }

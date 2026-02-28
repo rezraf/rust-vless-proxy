@@ -1,0 +1,7 @@
+{$DOMAIN:your-domain.com} {
+    reverse_proxy /ws viavless:8080
+
+    # Return a fake page for non-WebSocket requests
+    # so the server looks like a normal website
+    respond "Hello, World!" 200
+}

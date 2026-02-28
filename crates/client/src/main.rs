@@ -3,6 +3,7 @@ mod fragment_stream;
 mod socks5;
 mod tunnel;
 
+use socks5::SocksRequest;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug)]
@@ -17,7 +18,6 @@ struct Config {
     fragment_enabled: bool,
     fragment_size: usize,
     padding_enabled: bool,
-    #[allow(dead_code)] // will be used for traffic padding feature
     padding_max: usize,
 }
 
@@ -90,7 +90,14 @@ async fn handle_socks(
     stream: tokio::net::TcpStream,
     config: &Config,
 ) -> anyhow::Result<()> {
-    let (target_addr, socks_stream) = socks5::handshake(stream).await?;
-    tracing::info!(target = %target_addr.to_socket_string(), "socks5 connect");
-    tunnel::connect_and_relay(socks_stream, &target_addr, config).await
+    match socks5::handshake(stream).await? {
+        SocksRequest::Connect(target_addr, socks_stream) => {
+            tracing::info!(target = %target_addr.to_socket_string(), "socks5 tcp connect");
+            tunnel::tcp_relay(socks_stream, &target_addr, config).await
+        }
+        SocksRequest::UdpAssociate(_target_addr, tcp_keepalive, udp_bind_addr) => {
+            tracing::info!(udp_bind = %udp_bind_addr, "socks5 udp associate");
+            tunnel::udp_relay(tcp_keepalive, udp_bind_addr, config).await
+        }
+    }
 }

@@ -1,0 +1,37 @@
+services:
+  viavless:
+    build: .
+    restart: unless-stopped
+    environment:
+      - VIAVLESS_UUID=${VIAVLESS_UUID}
+      - VIAVLESS_NO_TLS=true
+      - VIAVLESS_LISTEN=0.0.0.0:8080
+      - VIAVLESS_WS_PATH=${VIAVLESS_WS_PATH:-/ws}
+      - RUST_LOG=${RUST_LOG:-viavless=info}
+    expose:
+      - "8080"
+    networks:
+      - proxy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - proxy
+    depends_on:
+      - viavless
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  proxy:
